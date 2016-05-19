@@ -1,0 +1,421 @@
+<apex:page controller="CustomReportController" doctype="html-5.0" showHeader="false" sidebar="false" standardStylesheets="false">
+<html>
+    <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1"/>
+        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css" integrity="sha384-1q8mTJOASx8j1Au+a5WDVnPi2lkFfwwEAa8hDDdjZlpLegxhjVME1fgjWPGmkzs7" crossorigin="anonymous"/>
+        <link rel="stylesheet" href="https://cdn.datatables.net/t/bs/dt-1.10.11/datatables.min.css"/>
+    </head>
+    <body>
+        <div class="container">
+            <br/>
+            <!-- The dropdown list of available reports as well as the available DML options such as update, delete, or create a report -->
+            <div class="row">
+                <div class="dropdown" id="report-dropdown">
+                    <button id="available-reports-btn" class="btn btn-default dropdown-toggle" disabled="disabled" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
+                        Reports
+                        <span class="caret"></span>
+                    </button>
+                    <ul class="dropdown-menu" aria-labelledby="available-reports-btn"></ul>
+
+                    <input id="update-report-btn" class="btn btn-default" disabled="disabled" type="button" value="Update Report" data-toggle="modal" data-target="#report-info-screen"/>
+                    <input id="delete-report-btn" class="btn btn-default" disabled="disabled" type="button" value="Delete Report" data-toggle="modal" data-target="#delete-report-screen"/>
+                    <input id="create-report-btn" class="btn btn-default" type="button" value="Create Report" data-toggle="modal" data-target="#report-info-screen"/>
+                </div>
+            </div>
+            <br/>
+            <!-- The result output for our DataTable -->
+            <div class="row">
+                <table id="report-table" class="table table-striped table-bordered" cellspacing="0" width="100%">
+                    <thead><tr><th>Select or create a report...</th></tr></thead>
+                </table>
+            </div>
+
+            <!-- Delete Report Modal -->
+            <div class="modal fade" id="delete-report-screen" tabindex="-1" role="dialog">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+                            <h4 class="modal-title">Delete Report</h4>
+                        </div>
+                        <div class="modal-body"></div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" id="delete-report">Delete</button>
+                        </div>
+                    </div><!-- /.modal-content -->
+                </div><!-- /.modal-dialog -->
+            </div><!-- /.modal -->
+
+            <!-- Create/Update Report Modal -->
+            <div class="modal fade" id="report-info-screen" tabindex="-1" role="dialog">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+                            <h4 class="modal-title"></h4>
+                        </div>
+                        <div class="modal-body">
+                            <div class="form-group">
+                                <input type="text" class="form-control" id="report-name" placeholder="Report Name"/>
+                            </div>
+                            <div class="form-group">
+                                <textarea class="form-control" id="soql-query" rows="15" placeholder="SOQL Query..."></textarea>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" id="report-submission"></button>
+                        </div>
+                    </div><!-- /.modal-content -->
+                </div><!-- /.modal-dialog -->
+            </div><!-- /.modal -->
+        </div>
+
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.12.2/jquery.min.js"></script>
+        <script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/js/bootstrap.min.js" integrity="sha384-0mSbJDEHialfmuBBQP6A4Qrprq5OVfW37PRR3j5ELqxss1yVqOtnepnHVP9aJ7xS" crossorigin="anonymous"></script>
+        <script src="https://cdn.datatables.net/t/bs/dt-1.10.11/datatables.min.js"></script>
+        <script>
+            j$ = jQuery.noConflict();
+            j$(function() {
+                var availableReportsBtn = j$('#available-reports-btn'),
+                    reportDropdownList  = j$('#report-dropdown ul'),
+                    // Keep track of the selected reported whether one was
+                    // selected from the dropdown or if a new report was created
+                    selectedReport,
+                    selectedReportId,
+
+                    // delete variables used for our delete modal screen
+                    deleteReportBtn     = j$('#delete-report-btn'),
+                    deleteModal         = j$('#delete-report-screen'),
+                    deleteModalBody     = deleteModal.find('.modal-body'),
+                    deleteModalSubmit   = deleteModal.find('#delete-report'),
+
+                    updateReportBtn     = j$('#update-report-btn'),
+                    createReportBtn     = j$('#create-report-btn'),
+
+                    // Used for the generic modal screen that will be used to
+                    // dynamically call a method from the JSRemote class
+                    reportAction,
+                    // Used to save the create report input values temporarily
+                    // in case there are errors when creating the report
+                    clearCreateScreen   = true,
+                    createReportName,
+                    createSoqlQuery,
+
+                    // Used for the generic modal screen whether a report is
+                    // being created or updated
+                    reportModal         = j$('#report-info-screen'),
+                    reportModalBody     = reportModal.find('.modal-body'),
+                    reportModalTitle    = reportModal.find('.modal-title'),
+                    reportModalSubmit   = reportModal.find('#report-submission'),
+                    reportName          = reportModal.find('#report-name'),
+                    soqlQuery           = reportModal.find('#soql-query'),
+
+                    reportTable         = j$('#report-table'),
+                    reportTableDt       = reportTable.DataTable();
+
+                var JSRemote = function () {
+                    var self = this;
+
+                    // Used when a report is deleted
+                    var restartTable = function() {
+                        // Destroy the DataTable and begin with the blank table
+                        // that we see initially
+                        reportTableDt.destroy();
+                        reportTable.empty();
+                        reportTable.append('<thead><tr><th>Select or create a report...</th></tr></thead>');
+                        reportTableDt = reportTable.DataTable();
+                    };
+
+                    // Used for selecting, updating, or creating a report
+                    var redrawTable = function(result) {
+                        // Destroy the DataTable and clear out the columns in case
+                        // we have a dataset with different columns
+                        reportTableDt.destroy();
+                        reportTable.empty();
+
+                        // rowData should already be an array of objects, each object representing a record,
+                        // with the key equating to the the api name field and the value will be the value
+                        // of that field for the record
+
+                        // columnData will also be an array of objects. This only contains the fields that
+                        // were referenced in our soql query. The key will represent the api name
+                        // of the field and the value will represent the field label for that api name.
+                        var rowData = result['result'],
+                            columnData = result['columns'],
+                            dataCol = [];
+
+                        // Extract the column information and set it to the specifications of the
+                        // DataTables columns option key used to setup the table
+                        for (var key in columnData) {
+                            dataCol.push({
+                                // Api field name
+                                "data": key,
+                                // Field label
+                                "title": columnData[key],
+                                // Set the defaultContent value for key cell values that do not exist
+
+                                // (i.e. if the column is null from the query then it will not be
+                                // included in the object result from our RemoteAction apex call)
+                                // Otherwise the following error will appear:
+                                // DataTables warning: table id={id} - Requested unknown parameter
+                                // '{parameter}' for row {row-index}, column{column-index}`
+
+                                // Please see the following link for more details:
+                                // https://datatables.net/manual/tech-notes/4
+                                "defaultContent": "" });
+                        }
+
+                        // Initialize the DataTable
+                        reportTableDt = reportTable.DataTable({
+                            columns:        dataCol,
+                            data:           rowData,
+                            deferRender:    true
+                        });
+                    };
+
+                    // Extract the error information from our RemoteAction response
+                    var getErrorMsg = function(event) {
+                        var errorMsg = event.message;
+                        if (event.type === 'exception') {
+                            if (event.where) {
+                                errorMsg += "<pre>" + event.where + "</pre>";
+                            }
+                        }
+
+                        return errorMsg;
+                    }
+
+                    var displayError = function(event) {
+                        var errorMsg = getErrorMsg(event)
+
+                        j$('.alert-danger').remove();
+                        j$('.container').prepend(
+                            '<div class="alert alert-danger alert-dismissible" role="alert">' +
+                                '<button type="button" class="close" data-dismiss="alert" aria-label="Close">' +
+                                '<span aria-hidden="true">&times;</span></button>' +
+                                errorMsg +
+                            '</div>');
+                    };
+
+                    var displayErrorInModal = function(event, isCreate = false) {
+                        var errorMsg = getErrorMsg(event)
+
+                        j$('.alert-danger').remove();
+                        reportModalBody.prepend(
+                            '<div class="alert alert-danger alert-dismissible" role="alert">' +
+                                '<button type="button" class="close" data-dismiss="alert" aria-label="Close">' +
+                                '<span aria-hidden="true">&times;</span></button>' +
+                                errorMsg +
+                            '</div>');
+
+                        // Temporarily store the report name and query so that
+                        // the user does not have to type it in again in case
+                        // they exit from the modal and choose the create report
+                        // option again
+                        if (isCreate) {
+                            clearCreateScreen = false;
+                            createReportName = reportName.val();
+                            createSoqlQuery = soqlQuery.val();
+                        }
+                    };
+
+                    // Remove any alerts in case we receive new ones
+                    this.removeErrorAlert = function() {
+                        j$('.alert-danger').remove();
+                    };
+
+                    // Get our list of reports
+                    this.getReports = function() {
+                        Visualforce.remoting.Manager.invokeAction(
+                            '{!$RemoteAction.CustomReportController.getReports}',
+                            function(result, event) {
+                                if (event.status) {
+                                    if (result.length) {
+                                        availableReportsBtn.removeAttr('disabled');
+                                        reportDropdownList.empty();
+                                        for (let report of result) {
+                                            reportDropdownList.append('<li><a href=' + report['Id'] + '>' +
+                                                                    report['Report_Name__c'] + '</a></li>');
+                                        }
+                                    } else {
+                                        availableReportsBtn.attr('disabled', 'disabled');
+                                    }
+                                } else {
+                                    displayError(event);
+                                }
+                            }
+                        );
+                    };
+
+                    // Query the selected report and display the result
+                    this.runReport = function() {
+                        Visualforce.remoting.Manager.invokeAction(
+                            '{!$RemoteAction.CustomReportController.runReport}',
+                            selectedReportId,
+                            function(result, event) {
+                                if (event.status) {
+                                    redrawTable(result);
+                                } else {
+                                    displayError(event);
+                                }
+                            }
+                        );
+                    };
+
+                    // Delete the selected report, update the Reports dropdown,
+                    // display a blank table, and disable the update and delete
+                    // report options
+                    this.deleteReport = function() {
+                        Visualforce.remoting.Manager.invokeAction(
+                            '{!$RemoteAction.CustomReportController.deleteReport}',
+                            selectedReportId,
+                            function(result, event) {
+                                if (event.status) {
+                                    deleteModal.modal('hide');
+                                    updateReportBtn.attr('disabled', 'disabled');
+                                    deleteReportBtn.attr('disabled', 'disabled');
+                                    self.getReports();
+                                    restartTable();
+                                } else {
+                                    displayErrorInModal(event);
+                                }
+                            }
+                        );
+                    };
+
+                    // Return the saved query from the database when selecting
+                    // the update report option so that we can display it on the modal
+                    this.getReportData = function() {
+                        Visualforce.remoting.Manager.invokeAction(
+                            '{!$RemoteAction.CustomReportController.getReportQuery}',
+                            selectedReportId,
+                            function(result, event) {
+                                if (event.status) {
+                                    reportName.val(selectedReport);
+                                    // replace the ascii quote with an actual quote character
+                                    soqlQuery.val(result.replace(/&#39;/g, "'"));
+                                } else {
+                                    displayErrorInModal(event);
+                                }
+                            }
+                        );
+                    }
+
+                    // Update the report, update the Reports dropdown, and redraw the table
+                    this.updateReport = function() {
+                        Visualforce.remoting.Manager.invokeAction(
+                            '{!$RemoteAction.CustomReportController.updateReport}',
+                            selectedReportId,
+                            reportName.val(),
+                            soqlQuery.val(),
+                            function(result, event) {
+                                if (event.status) {
+                                    reportModal.modal('hide');
+                                    self.getReports();
+                                    redrawTable(result);
+                                } else {
+                                    displayErrorInModal(event);
+                                }
+                            }
+                        );
+                    };
+
+                    // Create the report, update the Reports dropdown, refresh the table,
+                    // and open up the options to update or delete the created report
+                    // if the user would like to do so
+                    this.createReport = function() {
+                        Visualforce.remoting.Manager.invokeAction(
+                            '{!$RemoteAction.CustomReportController.createReport}',
+                            reportName.val(),
+                            soqlQuery.val(),
+                            function(result, event) {
+                                if (event.status) {
+                                    reportModal.modal('hide');
+                                    self.getReports();
+
+                                    clearCreateScreen = true;
+                                    createReportName = null;
+                                    createSoqlQuery = null;
+
+                                    var reportInfo = result['info'];
+                                    updateReportBtn.removeAttr('disabled');
+                                    deleteReportBtn.removeAttr('disabled');
+                                    selectedReportId = reportInfo['id'];
+                                    selectedReport = reportInfo['name'];
+
+                                    redrawTable(result);
+                                } else {
+                                    displayErrorInModal(event, true);
+                                }
+                            }
+                        );
+                    };
+                };
+
+                var jsRemote = new JSRemote();
+                // Retrieve any available reports and display it on the dropdown
+                jsRemote.getReports();
+
+                // Will dynamically display the are you sure text with the name of the report
+                deleteReportBtn.click(function(){
+                    jsRemote.removeErrorAlert();
+                    deleteModalBody.text('Are you sure you want to delete the folowing report: ' + selectedReport);
+                });
+
+                // Proceed with deleting the report
+                deleteModalSubmit.click(function(){
+                    jsRemote.deleteReport();
+                });
+
+                // Will dynamically set the modal title and submit text for the generic modal
+                // and get the saved query from the database
+                updateReportBtn.click(function() {
+                    jsRemote.removeErrorAlert();
+                    reportModalTitle.text('Update Report');
+                    reportModalSubmit.text('Update');
+                    jsRemote.getReportData();
+                    reportAction = 'updateReport';
+                });
+
+                // Will dynamically set the modal title and submit text for the generic modal
+                // and display any previously entered information if the create report submission
+                // had previously received an error, but was not corrected
+                createReportBtn.click(function() {
+                    jsRemote.removeErrorAlert();
+                    reportModalTitle.text('Create a Report');
+                    reportModalSubmit.text('Create');
+                    if (clearCreateScreen) {
+                        reportName.val('');
+                        soqlQuery.val('');
+                    } else {
+                        reportName.val(createReportName);
+                        soqlQuery.val(createSoqlQuery);
+                    }
+                    reportAction = 'createReport';
+                });
+
+                // Dynamically execute the method based on the reportAction whether
+                // it is a create or delete operation
+                reportModalSubmit.click(function() {
+                    jsRemote[reportAction]();
+                });
+
+                // Handle elements added after the fact for the Reports dropdown
+                reportDropdownList.on("click", "li", function(event) {
+                    event.preventDefault();
+                    // open up the options to update or delete the report
+                    updateReportBtn.removeAttr('disabled');
+                    deleteReportBtn.removeAttr('disabled');
+                    // Get the selected report name and Id information
+                    selectedReport = j$(this).text();
+                    selectedReportId = j$(this).find('a').attr('href');
+                    jsRemote.runReport();
+                });
+            });
+        </script>
+    </body>
+</html>
+</apex:page>
